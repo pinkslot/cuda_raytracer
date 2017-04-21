@@ -70,12 +70,9 @@ Camera* cudaRendercam = NULL;
 
 
 struct Ray {
-	float3 orig;	// ray origin
-	float3 dir;		// ray direction	
-	__device__ Ray(float3 o_, float3 d_) : orig(o_), dir(d_) {}
-	__device__ Ray(Vector3Df o_, Vector3Df d_) : 
-		orig(make_float3(o_.x, o_.y, o_.z)), 
-		dir(make_float3(d_.x, d_.y, d_.z)) {}
+	Vector3Df orig;	// ray origin
+	Vector3Df dir;		// ray direction
+	__device__ Ray(Vector3Df o_, Vector3Df d_) : orig(o_), dir(d_) {}
 };
 
 enum Refl_t { DIFF, METAL, SPEC, REFR, COAT };  // material types
@@ -93,12 +90,12 @@ struct Sphere {
 		// Solution x = (-b +- sqrt(b*b - 4ac)) / 2a
 		// Solve t^2*d.d + 2*t*(o-p).d + (o-p).(o-p)-R^2 = 0 
 
-		float3 op = pos - r.orig;  // 
+		Vector3Df op = Vector3Df(pos) - r.orig;  //
 		float t, epsilon = 0.01f;
 		float b = dot(op, r.dir);
 		float disc = b*b - dot(op, op) + rad*rad; // discriminant
 		if (disc<0) return 0; else disc = sqrtf(disc);
-		return (t = b - disc)>epsilon ? t : ((t = b + disc)>epsilon ? t : 0);
+		return (t = b - disc)>epsilon ? t : ((t = b + disc)>epsilon ? t : -1.f);
 	}
 
 };
@@ -314,67 +311,83 @@ __device__ void printv(T &arr, char mark = ' ') {
 //////////////////////
 // PATH TRACING
 //////////////////////
+enum GeomType{
+	SPHERE_TYPE = 1,
+	BHV_TYPE = 2,
+};
+struct PhasePoint {
+	Vector3Df orig;	// ray origin
+	Vector3Df dir;		// ray direction
+	int n;
+	Vector3Df mask;
+	__device__ PhasePoint(Vector3Df o_, Vector3Df d_) : orig(o_), dir(d_), n(0), mask(1.0f, 1.0f, 1.0f) {}
+	__device__ PhasePoint(Vector3Df o_, Vector3Df d_, int n_, Vector3Df mask_) : orig(o_), dir(d_), n(n_), mask(mask_) {}
+	__device__ PhasePoint() {}
+};
+
 __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vector3Df raydir, int avoidSelf,
 	Triangle *pTriangles, int* cudaBVHindexesOrTrilists, float* cudaBVHlimits, float* cudaTriangleIntersectionData, int* cudaTriIdxList)
 {
 	unsigned int x = blockIdx.x*blockDim.x + threadIdx.x;
 	unsigned int y = blockIdx.y*blockDim.y + threadIdx.y;
 	// colour mask
-	Vector3Df mask = Vector3Df(1.0f, 1.0f, 1.0f);
-	// accumulated colour
-	for (int bounces = 0; bounces < 6 && mask.lengthsq() > 1e-2; bounces++){  // iteration up to 4 bounces (instead of recursion in CPU code)
-		int sphere_id = -1, triangle_id = -1, pBestTriIdx = -1;
-		int geomtype = -1;
-		const Triangle *pBestTri = NULL;
+	Vector3Df ret;
+#define N 10
+	PhasePoint stack[N*4] = { PhasePoint(rayorig, raydir) };
+	int top = 1;
+	while (top){  // iteration up to 4 bounces (instead of recursion in CPU code)
+		PhasePoint &cur = stack[--top];
+		if (cur.n >= N) {
+			continue;
+		}
+		raydir = cur.dir;
+		rayorig = cur.orig;
+		Vector3Df mask = cur.mask;
+		
+		int sphere_id, pBestTriIdx;
+		int geomtype;
 		Vector3Df neworig, newdir;
-
-		float d = 1e10;
-		float scene_t = 1e10;
-
-
-		float hitdistance = 1e20;
+		float hit_dist = 1e10, sphere_hit_dist = 1e10;
 		Vector3Df n, nl; // normal, oriented 
 
 		// intersect all triangles in the scene stored in BVH
-		Vector3Df boxnormal = Vector3Df(0, 0, 0);
-
+		Vector3Df boxnormal = Vector3Df();
 		BVH_IntersectTriangles(
 			cudaBVHindexesOrTrilists, rayorig, raydir, avoidSelf,
-			pBestTriIdx, neworig, hitdistance, cudaBVHlimits,
+			pBestTriIdx, neworig, hit_dist, cudaBVHlimits,
 			cudaTriangleIntersectionData, cudaTriIdxList, boxnormal);
 
 		// intersect all spheres in the scene
-		int numspheres = sizeof(spheres) / sizeof(Sphere);
-		for (int i = numspheres; i--;){  // for all spheres in scene
-			// keep track of distance from origin to closest intersection point
-			if ((d = spheres[i].intersect(Ray(rayorig, raydir))) && d < scene_t){ 
-				scene_t = d; sphere_id = i; geomtype = 1; 
+		float d;
+		for (int i = sizeof(spheres) / sizeof(Sphere); i--;){
+			if ((d = spheres[i].intersect(Ray(rayorig, raydir))) > 0 && d < sphere_hit_dist){
+				sphere_hit_dist = d; sphere_id = i;
 			}
 		}
-		// set avoidSelf to current triangle index to avoid intersection between this triangle and the next ray, 
-		// so that we don't get self-shadow or self-reflection from this triangle...
-		avoidSelf = pBestTriIdx;
 
-		if (scene_t >= 1e10) {
-			return 0.;
+		if (sphere_hit_dist >= 1e10) {
+			 break;
 		}
 
-		if (hitdistance < scene_t && hitdistance > 0.002) // EPSILON
+		if (hit_dist < sphere_hit_dist && hit_dist > NUDGE_FACTOR) // EPSILON
 		{
-			scene_t = hitdistance;
-			triangle_id = pBestTriIdx;
-			geomtype = 2;
+			geomtype = BHV_TYPE;
+			avoidSelf = pBestTriIdx;
+		}
+		else {
+			geomtype = SPHERE_TYPE;
+			avoidSelf = -1;
 		}
 		// SPHERES:
-		if (geomtype == 1){
-
+		if (geomtype == SPHERE_TYPE){
 			Sphere &sphere = spheres[sphere_id]; // hit object with closest intersection
 			Vector3Df w(0, 1, -.5);
 			w.normalize();
-			neworig = rayorig + raydir * scene_t;
+			neworig = rayorig + raydir * hit_dist;
 			neworig.normalize();
 
-			return mask *(exp(4 - 4.f *((w - neworig)).length()));
+			ret += mask *(exp(4 - 4.f *((w - neworig)).length()));
+			continue;
 			/*
 			n = neworig - sphere.pos;
 			n.normalize();
@@ -397,25 +410,23 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 			*/
 		}
 
-		// TRIANGLES:5
-		if (geomtype == 2){
-			pBestTri = &pTriangles[triangle_id];
+		if (geomtype == BHV_TYPE){
+			const Triangle *pBestTri = &pTriangles[pBestTriIdx];
 			// CHECK NORMAL BEFORE EDITING THIS LINE
-			n = pBestTri->_normal*1;  // normal
+			n = pBestTri->_normal;  // normal
 			//n = Vector3Df(0,0,1);
 			n.normalize();
 	//			printf(dot(n, rayInWorldSpace) < 0 ? "" : "#");
 			bool into = dot(n, raydir) < 0;
 			nl = into ? n : n * -1;
 			
-			//Vector3Df colour = pBestTri->_colorf;
-#define MU 29.f
+#define MU 50.f
 #define LAMBDA Vector3Df(.8f, .6f, .2f)
 			/*if (x == gridDim.x * blockDim.x / 2 && y == gridDim.y * blockDim.y / 2) {
 				printf("%d", into);
 			}*/
 
-			if (!into && exp(-MU * hitdistance) < curand_uniform(randstate)) {
+			if (!into && exp(-MU * hit_dist) < curand_uniform(randstate)) {
 				// scattering
 
 				float x1 = raydir.x, x2 = raydir.y, x3 = raydir.z;
@@ -432,12 +443,12 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 					newdir.z = dot(Vector3Df(-denom, 0, x3), rand_dir);
 				}
 				else newdir = rand_dir;
-				neworig = rayorig - raydir * log((exp(-MU * hitdistance) - 1) * curand_uniform(randstate) + 1) / MU;
+				neworig = rayorig - raydir * log((exp(-MU * hit_dist) - 1) * curand_uniform(randstate) + 1) / MU;
 				mask *= LAMBDA;
 			}
 			else {
 #define MEDIA_K 1.f  // Index of Refraction air
-#define OBJ_K 1.3f  // Index of Refraction glass/water
+#define OBJ_K 1.2f  // Index of Refraction glass/water
 				float k = into ? MEDIA_K / OBJ_K : OBJ_K / MEDIA_K;  // IOR ratio of refractive materials
 
 				float ddn = dot(raydir, nl);
@@ -447,33 +458,27 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 				if (cos2t < 0.0f) // total internal reflection 
 				{
 					newdir = rdir;
-					// offset origin next path segment to prevent self intersection
 				}
 				else // cos2t > 0
 				{
-					// compute direction of transmission ray
 					Vector3Df tdir = raydir * k - nl * (ddn * k + sqrtf(cos2t));
 					tdir.normalize();
-
 					float R0 = (OBJ_K - MEDIA_K)*(OBJ_K - MEDIA_K) / (OBJ_K + MEDIA_K)*(OBJ_K + MEDIA_K);
 					float c = 1.f - (into ? -ddn : dot(tdir, n));
-					float Re = R0 + (1.f - R0) * c * c * c * c * c;
-
-					// randomly choose reflection or transmission ray
-					newdir = curand_uniform(randstate) < Re ?
-						raydir - n * 2.0f * dot(n, raydir) : tdir;
+					float R = R0 + (1.f - R0) * c * c * c * c * c;
+					rdir.normalize();
+					stack[top++] = PhasePoint(neworig, tdir, cur.n + 1, mask * (1 - R));
+					stack[top++] = PhasePoint(neworig, rdir, cur.n + 1, mask * R);
+					continue;
 				}
 			}
 		}
 
 		// set up origin and direction of next path segment
-		
-		raydir = newdir;
-		raydir.normalize();
-		rayorig = neworig + raydir * 1e-4;
+		newdir.normalize(); 
+		stack[top++] = PhasePoint(neworig, newdir, cur.n + 1, mask);
 	}
-
-	return Vector3Df(0, 0, 0);
+	return ret;
 }
 union Colour  // 4 bytes = 4 chars = 1 float
 {
