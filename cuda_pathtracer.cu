@@ -79,8 +79,9 @@ enum Refl_t { DIFF, METAL, SPEC, REFR, COAT };  // material types
 
 struct Sphere {
 
-	float rad, emit;				// radius 
-	float3 pos;	// position, emission, color 
+	float rad;				// radius 
+	float3 pos, lambda;	// position, emission, color 
+	float mu, k;
 	//Refl_t refl;			// reflection type (DIFFuse, SPECular, REFRactive)
 
 	__device__ float intersect(const Ray &r) const { // returns distance, 0 if nohit 
@@ -99,21 +100,23 @@ struct Sphere {
 		disc = sqrtf(disc);
 		return (t = b - disc) > 0  ? t : ((t = b + disc) > 0 ? t : -1.f);
 	}
-
 };
 
 __device__ Sphere spheres[] = {
 
 	// sun
-	//{ 1e5f, .3f, { 1e5f + 700.f, 0.f, 0.f }},  // 37, 34, 30  X: links rechts Y: op neer
+	//{ 1e5f, { 1e5f + 700.f, 0.f, 0.f }},  // 37, 34, 30  X: links rechts Y: op neer
 	// sky
-	{ 20.f, .05f, { 0.f, 0.f, 0.f }},
 	// ground
 	//{ 100000.f, 0.f, { 0.0f, -100001.2, 0.f }},
-	{ .5f, .05f, { -1.f, 0.f, 0.f } },
-
+	{ .2f, { -.5f, 1.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1 },
+	{ .5f, { -1.1f, 0.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1.33 },
+	{ .25f, { -1.1f, 0.f, 0.f }, { 0.9f, 0.9f, 0.9f }, 1.f, .001 },
+	{ 100.f, { -.5f, 1.1f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 0.f },
+	//{ .35f, { -.5f, 1.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1.33 },
+	{ 20.1f, { 0.f, 0.f, 0.f }, { .2f, .3f, 0.4f }, 0.1, 1.f },
+	
 	//{ .5f, 0.f, {0.f, 0.f, 0.f } },
-
 	// mountains
 	//{ 4e4, { 50.0f, -4e4 - 30, -3000 }, { 0, 0, 0 }, { 0.2f, 0.2f, 0.2f }, DIFF },
 	// white Mirr
@@ -318,36 +321,37 @@ enum GeomType{
 	BHV_TYPE = 2,
 };
 struct PhasePoint {
+	float time;
 	Vector3Df orig;	// ray origin
 	Vector3Df dir;		// ray direction
 	int n;
 	Vector3Df mask;
-	__device__ PhasePoint(Vector3Df o_, Vector3Df d_) : orig(o_), dir(d_), n(0), mask(1.0f, 1.0f, 1.0f) {}
-	__device__ PhasePoint(Vector3Df o_, Vector3Df d_, int n_, Vector3Df mask_) : orig(o_), dir(d_), n(n_), mask(mask_) {}
+	__device__ PhasePoint(float t, Vector3Df o_, Vector3Df d_) : time(t), orig(o_), dir(d_), n(0), mask(1.0f, 1.0f, 1.0f) {}
+	__device__ PhasePoint(float t, Vector3Df o_, Vector3Df d_, int n_, Vector3Df mask_) : time(t), orig(o_), dir(d_), n(n_), mask(mask_) {}
 	__device__ PhasePoint() {}
 };
 
-__device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vector3Df raydir, int avoidSelf,
+__device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vector3Df raydir, int avoidSelf, float time,
 	Triangle *pTriangles, int* cudaBVHindexesOrTrilists, float* cudaBVHlimits, float* cudaTriangleIntersectionData, int* cudaTriIdxList)
 {
 	unsigned int x = blockIdx.x*blockDim.x + threadIdx.x;
 	unsigned int y = blockIdx.y*blockDim.y + threadIdx.y;
 	// colour mask
 	Vector3Df ret;
-#define N 7
-	PhasePoint stack[N*4] = { PhasePoint(rayorig, raydir) };
+#define N 9
+	PhasePoint stack[(N+1) * 3] = { PhasePoint(time, rayorig, raydir) };
 	int top = 1;
-	while (top){  // iteration up to 4 bounces (instead of recursion in CPU code)
+	while (top){
 		PhasePoint &cur = stack[--top];
 		if (cur.n >= N) {
 			continue;
 		}
+
 		raydir = cur.dir;
 		rayorig = cur.orig + raydir * NUDGE_FACTOR;
 		
 		Vector3Df mask = cur.mask;
 		
-		int geomtype;
 		Vector3Df neworig, newdir;
 		float hit_dist = 1e10;
 
@@ -373,33 +377,51 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 		if (hit_dist >= 1e10) {
 			 continue;
 		}
-		Vector3Df n, nl; // normal, oriented 
-		if (sphere_id == 0){		// source
-			Vector3Df w(-1., 1, .5);
+		if (sphere_id == 0 || sphere_id == 3){		// source
+			Vector3Df w(0., 0., 1.);
+			Vector3Df w1(0., -1.0, 0.); 
 			w.normalize();
-			neworig = rayorig + raydir * hit_dist;
+			neworig = (rayorig + raydir * hit_dist) - spheres[sphere_id].pos;
 			neworig.normalize();
-			ret += mask *(exp(4 - 4.f *((w - neworig)).length()));
+			ret += sphere_id == 3 ?
+				mask * (1 * (exp(2.f - 2.f *((w - neworig)).length()))) :
+				mask * (10 * (exp(5.f - 5.f *((w1 - neworig)).length())));
 			continue;
 		}
-		else if (sphere_id == -1) {							// BVH
-			n = pTriangles[pBestTriIdx]._normal;			// normal
-			avoidSelf = pBestTriIdx;
+		// BVH prop
+		avoidSelf = pBestTriIdx;
+		Vector3Df n(pTriangles[pBestTriIdx]._normal);
+		bool into = dot(n, raydir) < 0;
+		Vector3Df lambda;
+		float obj_k = 1.3f, mu = 0.f;
+		if (!into) {
+			mu = 10.f;
+			lambda = Vector3Df(.7f, .5f, .15f);
 		}
-		else {												// other spheres
+		if (sphere_id != -1) {							// other sphere
+			Sphere &sp = spheres[sphere_id];
 			avoidSelf = -1;
-			n = rayorig + raydir * hit_dist - spheres[sphere_id].pos;
+			n = rayorig + raydir * hit_dist - sp.pos;
+			obj_k = sp.k;
+			into = dot(n, raydir) < 0;
+			if (!into) {
+				lambda = sp.lambda;
+				mu = sp.mu;
+			}
+			else {
+				mu = 0.f;
+				lambda = Vector3Df();
+			}
 		}
 		{
-#define MU 15.f
-#define LAMBDA Vector3Df(.8f, .6f, .3f)
 			n.normalize();
-			bool into = dot(n, raydir) < 0;
-			nl = into ? n : n * -1;
+			Vector3Df nl(into ? n : n * -1);
 			float optical_dist = 1.f;
-			if (!into) {
+#define BRANCHS 0
+			bool coin = mu > NUDGE_FACTOR && curand_uniform(randstate) > exp(-mu * hit_dist);
+			if (!into && (BRANCHS || coin)) {
 				// scattering
-				optical_dist = exp(-MU * hit_dist);
+				optical_dist = exp(-mu * hit_dist);
 				float x1 = raydir.x, x2 = raydir.y, x3 = raydir.z;
 
 				float indic = 2.f * curand_uniform(randstate) - 1.f,
@@ -415,34 +437,50 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 				}
 				else newdir = rand_dir;
 				newdir.normalize();
-				neworig = rayorig - raydir * log((exp(-MU * hit_dist) - 1) * curand_uniform(randstate) + 1) / MU;
-				stack[top++] = PhasePoint(neworig, newdir, cur.n + 1, mask * LAMBDA * (1-optical_dist));
+				float dist = log((optical_dist - 1) * curand_uniform(randstate) + 1) / mu;
+				neworig = rayorig - raydir * dist;
+				Vector3Df new_mask = mask;
+#if BRANCHS
+				new_mask *= (1.f - optical_dist);
+#endif
+				stack[top++] = PhasePoint(cur.time - dist, neworig, newdir, cur.n + 1, lambda * new_mask);
 			}
-			{
+			if (BRANCHS || !coin){
 				neworig = rayorig + raydir * hit_dist;
 #define MEDIA_K 1.f  // Index of Refraction air
-#define OBJ_K 1.3f  // Index of Refraction glass/water
-				float k = into ? MEDIA_K / OBJ_K : OBJ_K / MEDIA_K;  // IOR ratio of refractive materials
+				float k = into ? ( MEDIA_K / obj_k ) : ( obj_k / MEDIA_K );  // IOR ratio of refractive materials
 
 				float ddn = dot(raydir, nl);
 				float cos2t = 1.0f - k * k * (1.f - ddn*ddn);
 				Vector3Df rdir = raydir - n * 2.0f * dot(n, raydir);
-
-				if (cos2t < 0.0f) // total internal reflection 
+				Vector3Df new_mask = mask;
+#if BRANCHS
+				new_mask *= optical_dist;
+#endif
+				if (cos2t < 0.0f) // total internal reflection
 				{
 					rdir.normalize();
-					stack[top++] = PhasePoint(neworig, rdir, cur.n + 1, mask * optical_dist);
+					if (sphere_id == 2) {
+						new_mask.x = 0; new_mask.z = 0;
+					}
+					stack[top++] = PhasePoint(cur.time - hit_dist, neworig, rdir, cur.n + 1, new_mask);
 				}
 				else // cos2t > 0
 				{
 					Vector3Df tdir = raydir * k - nl * (ddn * k + sqrtf(cos2t));
 					tdir.normalize();
-					float R0 = (OBJ_K - MEDIA_K)*(OBJ_K - MEDIA_K) / (OBJ_K + MEDIA_K)*(OBJ_K + MEDIA_K);
+					float R0 = (obj_k - MEDIA_K)*(obj_k - MEDIA_K) / (obj_k + MEDIA_K)*(obj_k + MEDIA_K);
 					float c = 1.f - (into ? -ddn : dot(tdir, n));
 					float R = R0 + (1.f - R0) * c * c * c * c * c;
 					rdir.normalize();
-					stack[top++] = PhasePoint(neworig, tdir, cur.n + 1, mask * (1 - R) * optical_dist);
-					stack[top++] = PhasePoint(neworig, rdir, cur.n + 1, mask * R * optical_dist);
+					coin = curand_uniform(randstate) < R;
+#define BRANCHB 1
+					if (BRANCHB || !coin) {
+						stack[top++] = PhasePoint(cur.time - hit_dist, neworig, tdir, cur.n + 1, new_mask * (BRANCHB ? (1.f - R) : 1.f));
+					}
+					if (BRANCHB || coin) {
+						stack[top++] = PhasePoint(cur.time - hit_dist, neworig, rdir, cur.n + 1, new_mask * (BRANCHB ? R : 1.f));
+					}
 				}
 			}
 		}
@@ -539,7 +577,7 @@ __global__ void CoreLoopPathTracingKernel(Vector3Df* output, Vector3Df* accumbuf
 		// origin of next ray in path
 		Vector3Df originInWorldSpace = aperturePoint;
 
-		finalcol += path_trace(&randState, originInWorldSpace, rayInWorldSpace, -1, pTriangles, 
+		finalcol += path_trace(&randState, originInWorldSpace, rayInWorldSpace, -1, cudaRendercam->time, pTriangles,
 			cudaBVHindexesOrTrilists, cudaBVHlimits, cudaTriangleIntersectionData, cudaTriIdxList) * (1.0f/samps);
 	}       
 

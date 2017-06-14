@@ -36,6 +36,7 @@ struct Camera {
 	float2 fov;
 	float apertureRadius;
 	float focalDistance;
+	float time;
 };
 
 // class for interactive camera object, updated on the CPU for each frame and copied into Camera struct
@@ -50,6 +51,7 @@ private:
 	float radius;
 	float apertureRadius;
 	float focalDistance;
+	float time;
 
 	void fixYaw();
 	void fixPitch();

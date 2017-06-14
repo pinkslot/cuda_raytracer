@@ -20,6 +20,7 @@
 *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 */
 #define _CRT_SECURE_NO_WARNINGS
+#include "FreeImage.h"
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v7.5\extras\CUPTI\include\GL\glew.h"
@@ -53,6 +54,30 @@ int *cudaBVHindexesOrTrilists2 = NULL;
 bool buffer_reset = false;
 
 void Timer(int obsolete) {
+	static time_t t1 = clock();
+	int msec = (clock() - t1) / CLOCKS_PER_SEC;
+	static int counter = 0, i = 0;
+	counter = !counter ? msec : counter;
+	if (counter && msec >= counter) {
+		counter *= 2;
+		i++;
+		printf("%dth file in %d seconds\n", i, msec);
+
+		// Make the BYTE array, factor of 3 because it's RBG.
+		GLubyte* pixels = new GLubyte[3 * width * height];
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+		glReadPixels(0, 0, width, height, GL_BGR, GL_UNSIGNED_BYTE, pixels);
+
+		// Convert to FreeImage format & save to file
+		FIBITMAP* image = FreeImage_ConvertFromRawBits(pixels, width, height, 3 * width, 24, 0xFF0000, 0x00FF00, 0x0000FF, false);
+		char fname[100];
+		sprintf_s(fname, "b-%d.png", i);
+		FreeImage_Save(FIF_PNG, image, fname, 0);
+
+		// Free resources
+		FreeImage_Unload(image);
+		delete[] pixels;
+	}
 
 	glutPostRedisplay();
 	glutTimerFunc(30, Timer, 0);
@@ -252,7 +277,11 @@ void prepCUDAscene(){
 
 	// specify scene filename 
 	//const char* scenefile = "data/teapot.ply";  // teapot.ply, big_atc.ply
-	const char* scenefile = "data/happy.ply";
+	//const char* scenefile = "data/happy.ply";
+	//const char* scenefile = "data/teapot.ply";
+	const char* scenefile = "data/shark.ply";
+	//const char* scenefile = "data/chopper.ply";
+	//const char* scenefile = "data/egret.ply";
 	//const char* scenefile = "data/bun_zipper_res2.ply";  // teapot.ply, big_atc.ply
 	//const char* scenefile = "data/bun_zipper.ply";  // teapot.ply, big_atc.ply
 	//const char* scenefile = "data/happy.ply";  // teapot.ply, big_atc.ply
@@ -401,7 +430,7 @@ int main(int argc, char** argv){
 	// specify the display mode to be RGB and single buffering:
 	glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
 	// specify the initial window position:
-	glutInitWindowPosition(300, 300);
+	glutInitWindowPosition(100, 100);
 	// specify the initial window size:
 	glutInitWindowSize(width, height);
 	// create the window and set title:
