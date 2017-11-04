@@ -21,19 +21,23 @@
 
 InteractiveCamera::InteractiveCamera()
 {
-	time = 100;
+	time = 99.;
 	centerPosition = Vector3Df(-.5, 0, 0);
 	yaw = 0;
-	pitch = 0.3;
-	radius = 4.;
+	pitch = 0.2;
+	radius = 3.5;
 	apertureRadius = 0.01; // 0.04
-	focalDistance = 4.f;
+	focalDistance = 3.5f;
 
 	resolution = make_float2(512, 512);  // width, height
 	fov = make_float2(40, 40);
 }
 
 InteractiveCamera::~InteractiveCamera() {}
+
+void InteractiveCamera::tick(float m){
+	time += m;
+}
 
 void InteractiveCamera::changeYaw(float m){
 	yaw += m;

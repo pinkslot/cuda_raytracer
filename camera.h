@@ -60,9 +60,11 @@ private:
 	void fixFocalDistance();
 
 public:
+	float get_time() { return time; }
 	InteractiveCamera();
 	virtual ~InteractiveCamera();
-   	void changeYaw(float m);
+	void tick(float m);
+	void changeYaw(float m);
 	void changePitch(float m);
 	void changeRadius(float m);
 	void changeAltitude(float m);

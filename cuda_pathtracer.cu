@@ -30,8 +30,8 @@
 #include <vector_functions.h>
 #include "device_launch_parameters.h"
 #include "cutil_math.h"
-#include "C:\Program Files\NVIDIA Corporation\Installer2\CUDASamples_7.5.{075424A8-24ED-4D5A-B1EB-F0B5B2EDDCFB}\common\inc\GL\glew.h"
-#include "C:\Program Files\NVIDIA Corporation\Installer2\CUDASamples_7.5.{075424A8-24ED-4D5A-B1EB-F0B5B2EDDCFB}\common\inc\GL\freeglut.h"
+#include "C:\Program Files\NVIDIA Corporation\Installer2\CUDASamples_7.5.{55ED2DCF-EE35-477A-A8FD-F0ABB11EC0BF}\common\inc\GL\glew.h"
+#include "C:\Program Files\NVIDIA Corporation\Installer2\CUDASamples_7.5.{55ED2DCF-EE35-477A-A8FD-F0ABB11EC0BF}\common\inc\GL\freeglut.h"
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 #include <curand.h>
@@ -109,13 +109,15 @@ __device__ Sphere spheres[] = {
 	// sky
 	// ground
 	//{ 100000.f, 0.f, { 0.0f, -100001.2, 0.f }},
-	{ .2f, { -.5f, 1.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1 },
+	{ .25f, { -.5f, 1.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1 },
 	{ .5f, { -1.1f, 0.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1.33 },
 	{ .25f, { -1.1f, 0.f, 0.f }, { 0.9f, 0.9f, 0.9f }, 1.f, .001 },
 	{ 100.f, { -.5f, 1.1f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 0.f },
 	//{ .35f, { -.5f, 1.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1.33 },
-	{ 20.1f, { 0.f, 0.f, 0.f }, { .2f, .3f, 0.4f }, 0.1, 1.f },
-	
+	{ 20.1f, { 0.f, 0.f, 0.f }, { .3f, .4f, 0.5f }, .3, 1.f },
+
+	{ .3f, { -.5f, 1.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1.33 },
+
 	//{ .5f, 0.f, {0.f, 0.f, 0.f } },
 	// mountains
 	//{ 4e4, { 50.0f, -4e4 - 30, -3000 }, { 0, 0, 0 }, { 0.2f, 0.2f, 0.2f }, DIFF },
@@ -334,24 +336,25 @@ struct PhasePoint {
 __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vector3Df raydir, int avoidSelf, float time,
 	Triangle *pTriangles, int* cudaBVHindexesOrTrilists, float* cudaBVHlimits, float* cudaTriangleIntersectionData, int* cudaTriIdxList)
 {
-	unsigned int x = blockIdx.x*blockDim.x + threadIdx.x;
-	unsigned int y = blockIdx.y*blockDim.y + threadIdx.y;
+//	unsigned int x = blockIdx.x*blockDim.x + threadIdx.x;
+//	unsigned int y = blockIdx.y*blockDim.y + threadIdx.y;
 	// colour mask
 	Vector3Df ret;
-#define N 9
+#define N 10
 	PhasePoint stack[(N+1) * 3] = { PhasePoint(time, rayorig, raydir) };
 	int top = 1;
 	while (top){
 		PhasePoint &cur = stack[--top];
-		if (cur.n >= N) {
+		if (cur.n >= N || cur.time < 0) {
 			continue;
 		}
+//		if (x == y && (cur.time < 0 || cur.time > 100))printf("%f\n", cur.time);
 
 		raydir = cur.dir;
 		rayorig = cur.orig + raydir * NUDGE_FACTOR;
-		
+		time = cur.time;
+
 		Vector3Df mask = cur.mask;
-		
 		Vector3Df neworig, newdir;
 		float hit_dist = 1e10;
 
@@ -383,9 +386,14 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 			w.normalize();
 			neworig = (rayorig + raydir * hit_dist) - spheres[sphere_id].pos;
 			neworig.normalize();
-			ret += sphere_id == 3 ?
+			ret +=
+				sphere_id == 3 ?
 				mask * (1 * (exp(2.f - 2.f *((w - neworig)).length()))) :
-				mask * (10 * (exp(5.f - 5.f *((w1 - neworig)).length())));
+				//				mask * (sqrt(10 * abs(time - 105)) * exp((2.f - (w1 - neworig).length()) / abs(time - 105) * 10. - abs(time - 100.)))
+				mask * (60. * exp((2.f - (w1 - neworig).length() * 3.)
+				- abs(time - 100.) * 2.
+				))
+				;
 			continue;
 		}
 		// BVH prop
@@ -416,12 +424,11 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 		{
 			n.normalize();
 			Vector3Df nl(into ? n : n * -1);
-			float optical_dist = 1.f;
+			float optical_dist = exp(-mu * hit_dist);
 #define BRANCHS 0
-			bool coin = mu > NUDGE_FACTOR && curand_uniform(randstate) > exp(-mu * hit_dist);
-			if (!into && (BRANCHS || coin)) {
+			bool coin;
+			if (BRANCHS || (coin = (!into && mu > NUDGE_FACTOR && (curand_uniform(randstate) > optical_dist)))) {
 				// scattering
-				optical_dist = exp(-mu * hit_dist);
 				float x1 = raydir.x, x2 = raydir.y, x3 = raydir.z;
 
 				float indic = 2.f * curand_uniform(randstate) - 1.f,
@@ -437,15 +444,15 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 				}
 				else newdir = rand_dir;
 				newdir.normalize();
-				float dist = log((optical_dist - 1) * curand_uniform(randstate) + 1) / mu;
+				float dist = log((optical_dist - 1) * curand_uniform(randstate) + 1) / (-mu);
 				neworig = rayorig - raydir * dist;
-				Vector3Df new_mask = mask;
+				stack[top++] = PhasePoint(cur.time - dist, neworig, newdir, cur.n + 1, lambda * mask
 #if BRANCHS
-				new_mask *= (1.f - optical_dist);
-#endif
-				stack[top++] = PhasePoint(cur.time - dist, neworig, newdir, cur.n + 1, lambda * new_mask);
+					* (1.f - optical_dist)
+#endif					
+				);
 			}
-			if (BRANCHS || !coin){
+			if (BRANCHS || !coin) {
 				neworig = rayorig + raydir * hit_dist;
 #define MEDIA_K 1.f  // Index of Refraction air
 				float k = into ? ( MEDIA_K / obj_k ) : ( obj_k / MEDIA_K );  // IOR ratio of refractive materials
@@ -453,6 +460,8 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 				float ddn = dot(raydir, nl);
 				float cos2t = 1.0f - k * k * (1.f - ddn*ddn);
 				Vector3Df rdir = raydir - n * 2.0f * dot(n, raydir);
+				//Vector3Df rdir = raydir - n * 2.0f * dot(n, raydir);
+
 				Vector3Df new_mask = mask;
 #if BRANCHS
 				new_mask *= optical_dist;

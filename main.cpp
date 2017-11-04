@@ -50,15 +50,16 @@ float *cudaTriangleIntersectionData2 = NULL;
 int* cudaTriIdxList2 = NULL;
 float *cudaBVHlimits2 = NULL;
 int *cudaBVHindexesOrTrilists2 = NULL;
+InteractiveCamera* interactiveCamera = NULL;
 
 bool buffer_reset = false;
 
 void Timer(int obsolete) {
 	static time_t t1 = clock();
 	int msec = (clock() - t1) / CLOCKS_PER_SEC;
-	static int counter = 0, i = 0;
+	static int counter = 0, i = 1;
 	counter = !counter ? msec : counter;
-	if (counter && msec >= counter) {
+	if (msec >= 30 * 60 * i) {
 		counter *= 2;
 		i++;
 		printf("%dth file in %d seconds\n", i, msec);
@@ -71,9 +72,10 @@ void Timer(int obsolete) {
 		// Convert to FreeImage format & save to file
 		FIBITMAP* image = FreeImage_ConvertFromRawBits(pixels, width, height, 3 * width, 24, 0xFF0000, 0x00FF00, 0x0000FF, false);
 		char fname[100];
-		sprintf_s(fname, "b-%d.png", i);
+		sprintf_s(fname, "a-%d.png", i);
 		FreeImage_Save(FIF_PNG, image, fname, 0);
-
+		
+		interactiveCamera->tick(1.); buffer_reset = true;
 		// Free resources
 		FreeImage_Unload(image);
 		delete[] pixels;
@@ -97,7 +99,6 @@ float rotate_x = 0.0, rotate_y = 0.0;
 float translate_z = -30.0;
 
 // TODO: Delete stuff at some point!!!
-InteractiveCamera* interactiveCamera = NULL;
 Camera* hostRendercam = NULL;  
 Clock watch;
 
@@ -193,6 +194,10 @@ void keyboard(unsigned char key, int /*x*/, int /*y*/)
 	
 	case(27) : exit(0);
 	case(' ') : initCamera(); buffer_reset = true; break;
+	case('5') : interactiveCamera->tick(1.); buffer_reset = true; 
+		printf("time=%f\n", interactiveCamera->get_time());  break;
+	case('4') : interactiveCamera->tick(-1.); buffer_reset = true;
+		printf("time=%f\n", interactiveCamera->get_time());  break;
 	case('a') : interactiveCamera->strafe(-0.05f); buffer_reset = true; break;
 	case('d') : interactiveCamera->strafe(0.05f); buffer_reset = true; break;
 	case('r') : interactiveCamera->changeAltitude(0.05f); buffer_reset = true; break;
