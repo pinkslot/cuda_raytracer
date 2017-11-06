@@ -115,7 +115,7 @@ __device__ Sphere spheres[] = {
 	{ .25f, { -1.1f, 0.f, 0.f }, { 0.9f, 0.9f, 0.9f }, 1.f, .001 },
 	{ 100.f, { -.5f, 1.1f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 0.f },
 	//{ .35f, { -.5f, 1.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1.33 },
-	{ 20.1f, { 0.f, 0.f, 0.f }, { .3f, .4f, 0.5f }, .3, 1.f },
+	{ 20.1f, { 0.f, 0.f, 0.f }, { .3f, .4f, 0.5f }, .0, 1.f },
 
 	{ .3f, { -.5f, 1.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1.33 },
 
@@ -426,12 +426,13 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 		Vector3Df lambda;
 		float obj_k = 1.3f, mu = 0.f, spec_frac = 1., dif_refl_frac = 0.;
 		if (!into) {
-			mu = 10.f;
+			mu = 5.f;
 			lambda = Vector3Df(.7f, .5f, .15f);
 			spec_frac = 1., dif_refl_frac = 1.;
 			
 		}
 		if (sphere_id != -1) {							// other sphere
+			spec_frac = 1., dif_refl_frac = 0.;
 			Sphere &sp = spheres[sphere_id];
 			avoidSelf = -1;
 			n = rayorig + raydir * hit_dist - sp.pos;
@@ -488,12 +489,12 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 #endif
 				neworig = rayorig + raydir * hit_dist;
 #define MEDIA_K 1.f  // Index of Refraction air
-#define BRANCHB 0
 				float fcoin = curand_uniform(randstate);
+#define BRANCHB 0
 				if (BRANCHB || fcoin < spec_frac) {
 					float k = into ? (MEDIA_K / obj_k) : (obj_k / MEDIA_K);  // IOR ratio of refractive materials
 					float ddn = dot(raydir, nl);
-					float cos2t = 1.0f - k * k * (1.f - ddn*ddn);
+					float cos2t = 1.0f - k * k * (1.f - ddn*ddn);	
 					Vector3Df rdir = raydir - n * 2.0f * dot(n, raydir);
 
 					if (cos2t < 0.0f) // total internal reflection
@@ -512,28 +513,24 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 						float c = 1.f - (into ? -ddn : dot(tdir, n));
 						float R = (R0 + (1.f - R0) * c * c * c * c * c) * spec_frac;
 						rdir.normalize();
-						
+
 						if (BRANCHB || fcoin > R) {
-							if (x == y && (cur.time < 0 || cur.time > 100))
 							stack[top++] = PhasePoint(cur.time - hit_dist, neworig, tdir, cur.n + 1, new_mask * (BRANCHB ? (spec_frac - R) : 1.f));
 						}
 						if (BRANCHB || fcoin < R) {
-							if (x == y && (cur.time < 0 || cur.time > 100))
 							stack[top++] = PhasePoint(cur.time - hit_dist, neworig, rdir, cur.n + 1, new_mask * (BRANCHB ? R : 1.f));
 						}
 					}
 				}
-
-				if (0 || fcoin < spec_frac + (1 - spec_frac) * dif_refl_frac) {
-					Vector3Df tdir = dif_dir(nl * -1, randstate);
-
-					stack[top++] = PhasePoint(cur.time - hit_dist, neworig, tdir, cur.n + 1, new_mask * (BRANCHB ? ((1 - spec_frac) * dif_refl_frac) : 1.f));
+				
+				if (BRANCHB || fcoin > spec_frac && fcoin < spec_frac + (1 - spec_frac) * dif_refl_frac) {
+					Vector3Df rdir = dif_dir(nl, randstate);
+					stack[top++] = PhasePoint(cur.time - hit_dist, neworig, rdir, cur.n + 1, new_mask * (BRANCHB ? ((1 - spec_frac) * (1 - dif_refl_frac)) : 1.f));
 				}
 
-				if (0 || fcoin > spec_frac + (1 - spec_frac) * dif_refl_frac) {
-					Vector3Df rdir = dif_dir(nl, randstate);
-
-					stack[top++] = PhasePoint(cur.time - hit_dist, neworig, rdir, cur.n + 1, new_mask * (BRANCHB ? ((1 - spec_frac) * (1-dif_refl_frac)) : 1.f));
+				if (BRANCHB || fcoin > spec_frac + (1 - spec_frac) * dif_refl_frac) {
+					Vector3Df tdir = dif_dir(nl * -1, randstate);
+					stack[top++] = PhasePoint(cur.time - hit_dist, neworig, tdir, cur.n + 1, new_mask * (BRANCHB ? ((1 - spec_frac) * dif_refl_frac) : 1.f));
 				}
 			}
 		}
