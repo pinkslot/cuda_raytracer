@@ -80,8 +80,9 @@ enum Refl_t { DIFF, METAL, SPEC, REFR, COAT };  // material types
 struct Sphere {
 
 	float rad;				// radius 
-	float3 pos, lambda;	// position, emission, color 
+	float3 pos, lambda;	// position
 	float mu, k;
+
 	//Refl_t refl;			// reflection type (DIFFuse, SPECular, REFRactive)
 
 	__device__ float intersect(const Ray &r) const { // returns distance, 0 if nohit 
@@ -109,7 +110,7 @@ __device__ Sphere spheres[] = {
 	// sky
 	// ground
 	//{ 100000.f, 0.f, { 0.0f, -100001.2, 0.f }},
-	{ .25f, { -.5f, 1.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1 },
+	{ .25f, { -.5f, 1.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1. },
 	{ .5f, { -1.1f, 0.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1.33 },
 	{ .25f, { -1.1f, 0.f, 0.f }, { 0.9f, 0.9f, 0.9f }, 1.f, .001 },
 	{ 100.f, { -.5f, 1.1f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 0.f },
@@ -333,11 +334,33 @@ struct PhasePoint {
 	__device__ PhasePoint() {}
 };
 
+__device__ Vector3Df dif_dir(Vector3Df norm, curandState *randstate) {
+	Vector3Df res;
+	float rand_sin = curand_uniform(randstate),
+		phi = curand_uniform(randstate) * 2 * M_PI,
+		x1 = norm.x, x2 = norm.y, x3 = norm.z;
+
+	Vector3Df rand_dir = Vector3Df(cos(phi) * rand_sin, sin(phi) * rand_sin, sqrt(1 - rand_sin *rand_sin));
+
+	if (abs(x3 - 1) > 1e-5) {
+		float denom = sqrt(1 - x3);
+		res.x = dot(Vector3Df(x1 * x3 / denom, -x2 / denom, x1), rand_dir);
+		res.y = dot(Vector3Df(x2 * x3 / denom, x1 / denom, x2), rand_dir);
+		res.z = dot(Vector3Df(-denom, 0, x3), rand_dir);
+	}
+	else {
+		res = rand_dir;
+	}
+	res.normalize();
+	return res;
+}
+
+
 __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vector3Df raydir, int avoidSelf, float time,
 	Triangle *pTriangles, int* cudaBVHindexesOrTrilists, float* cudaBVHlimits, float* cudaTriangleIntersectionData, int* cudaTriIdxList)
 {
-//	unsigned int x = blockIdx.x*blockDim.x + threadIdx.x;
-//	unsigned int y = blockIdx.y*blockDim.y + threadIdx.y;
+	unsigned int x = blockIdx.x*blockDim.x + threadIdx.x;
+	unsigned int y = blockIdx.y*blockDim.y + threadIdx.y;
 	// colour mask
 	Vector3Df ret;
 #define N 10
@@ -401,10 +424,12 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 		Vector3Df n(pTriangles[pBestTriIdx]._normal);
 		bool into = dot(n, raydir) < 0;
 		Vector3Df lambda;
-		float obj_k = 1.3f, mu = 0.f;
+		float obj_k = 1.3f, mu = 0.f, spec_frac = 1., dif_refl_frac = 0.;
 		if (!into) {
 			mu = 10.f;
 			lambda = Vector3Df(.7f, .5f, .15f);
+			spec_frac = 1., dif_refl_frac = 1.;
+			
 		}
 		if (sphere_id != -1) {							// other sphere
 			Sphere &sp = spheres[sphere_id];
@@ -427,13 +452,14 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 			float optical_dist = exp(-mu * hit_dist);
 #define BRANCHS 0
 			bool coin;
+
 			if (BRANCHS || (coin = (!into && mu > NUDGE_FACTOR && (curand_uniform(randstate) > optical_dist)))) {
 				// scattering
 				float x1 = raydir.x, x2 = raydir.y, x3 = raydir.z;
 
-				float indic = 2.f * curand_uniform(randstate) - 1.f,
+				float indic = cos(curand_uniform(randstate) * M_PI),
 					phi = curand_uniform(randstate) * 2 * M_PI,
-					sin_ind = (1 - indic * indic);
+					sin_ind = sqrt(1 - indic * indic);
 
 				Vector3Df rand_dir = Vector3Df(cos(phi) * sin_ind, sin(phi) * sin_ind, indic);
 				if (abs(x3 - 1) > 1e-5) {
@@ -442,7 +468,9 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 					newdir.y = dot(Vector3Df(x2 * x3 / denom, x1 / denom, x2), rand_dir);
 					newdir.z = dot(Vector3Df(-denom, 0, x3), rand_dir);
 				}
-				else newdir = rand_dir;
+				else {
+					newdir = rand_dir;
+				}
 				newdir.normalize();
 				float dist = log((optical_dist - 1) * curand_uniform(randstate) + 1) / (-mu);
 				neworig = rayorig - raydir * dist;
@@ -453,43 +481,59 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 				);
 			}
 			if (BRANCHS || !coin) {
-				neworig = rayorig + raydir * hit_dist;
-#define MEDIA_K 1.f  // Index of Refraction air
-				float k = into ? ( MEDIA_K / obj_k ) : ( obj_k / MEDIA_K );  // IOR ratio of refractive materials
-
-				float ddn = dot(raydir, nl);
-				float cos2t = 1.0f - k * k * (1.f - ddn*ddn);
-				Vector3Df rdir = raydir - n * 2.0f * dot(n, raydir);
-				//Vector3Df rdir = raydir - n * 2.0f * dot(n, raydir);
-
+				// border
 				Vector3Df new_mask = mask;
 #if BRANCHS
 				new_mask *= optical_dist;
 #endif
-				if (cos2t < 0.0f) // total internal reflection
-				{
-					rdir.normalize();
-					if (sphere_id == 2) {
-						new_mask.x = 0; new_mask.z = 0;
+				neworig = rayorig + raydir * hit_dist;
+#define MEDIA_K 1.f  // Index of Refraction air
+#define BRANCHB 0
+				float fcoin = curand_uniform(randstate);
+				if (BRANCHB || fcoin < spec_frac) {
+					float k = into ? (MEDIA_K / obj_k) : (obj_k / MEDIA_K);  // IOR ratio of refractive materials
+					float ddn = dot(raydir, nl);
+					float cos2t = 1.0f - k * k * (1.f - ddn*ddn);
+					Vector3Df rdir = raydir - n * 2.0f * dot(n, raydir);
+
+					if (cos2t < 0.0f) // total internal reflection
+					{
+						rdir.normalize();
+						if (sphere_id == 2) {
+							new_mask.x = 0; new_mask.z = 0;
+						}
+						stack[top++] = PhasePoint(cur.time - hit_dist, neworig, rdir, cur.n + 1, new_mask);
 					}
-					stack[top++] = PhasePoint(cur.time - hit_dist, neworig, rdir, cur.n + 1, new_mask);
+					else // cos2t > 0
+					{
+						Vector3Df tdir = raydir * k - nl * (ddn * k + sqrtf(cos2t));
+						tdir.normalize();
+						float R0 = (obj_k - MEDIA_K)*(obj_k - MEDIA_K) / (obj_k + MEDIA_K) / (obj_k + MEDIA_K);
+						float c = 1.f - (into ? -ddn : dot(tdir, n));
+						float R = (R0 + (1.f - R0) * c * c * c * c * c) * spec_frac;
+						rdir.normalize();
+						
+						if (BRANCHB || fcoin > R) {
+							if (x == y && (cur.time < 0 || cur.time > 100))
+							stack[top++] = PhasePoint(cur.time - hit_dist, neworig, tdir, cur.n + 1, new_mask * (BRANCHB ? (spec_frac - R) : 1.f));
+						}
+						if (BRANCHB || fcoin < R) {
+							if (x == y && (cur.time < 0 || cur.time > 100))
+							stack[top++] = PhasePoint(cur.time - hit_dist, neworig, rdir, cur.n + 1, new_mask * (BRANCHB ? R : 1.f));
+						}
+					}
 				}
-				else // cos2t > 0
-				{
-					Vector3Df tdir = raydir * k - nl * (ddn * k + sqrtf(cos2t));
-					tdir.normalize();
-					float R0 = (obj_k - MEDIA_K)*(obj_k - MEDIA_K) / (obj_k + MEDIA_K)*(obj_k + MEDIA_K);
-					float c = 1.f - (into ? -ddn : dot(tdir, n));
-					float R = R0 + (1.f - R0) * c * c * c * c * c;
-					rdir.normalize();
-					coin = curand_uniform(randstate) < R;
-#define BRANCHB 1
-					if (BRANCHB || !coin) {
-						stack[top++] = PhasePoint(cur.time - hit_dist, neworig, tdir, cur.n + 1, new_mask * (BRANCHB ? (1.f - R) : 1.f));
-					}
-					if (BRANCHB || coin) {
-						stack[top++] = PhasePoint(cur.time - hit_dist, neworig, rdir, cur.n + 1, new_mask * (BRANCHB ? R : 1.f));
-					}
+
+				if (0 || fcoin < spec_frac + (1 - spec_frac) * dif_refl_frac) {
+					Vector3Df tdir = dif_dir(nl * -1, randstate);
+
+					stack[top++] = PhasePoint(cur.time - hit_dist, neworig, tdir, cur.n + 1, new_mask * (BRANCHB ? ((1 - spec_frac) * dif_refl_frac) : 1.f));
+				}
+
+				if (0 || fcoin > spec_frac + (1 - spec_frac) * dif_refl_frac) {
+					Vector3Df rdir = dif_dir(nl, randstate);
+
+					stack[top++] = PhasePoint(cur.time - hit_dist, neworig, rdir, cur.n + 1, new_mask * (BRANCHB ? ((1 - spec_frac) * (1-dif_refl_frac)) : 1.f));
 				}
 			}
 		}

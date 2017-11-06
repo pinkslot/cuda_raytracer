@@ -21,7 +21,7 @@
 
 InteractiveCamera::InteractiveCamera()
 {
-	time = 99.;
+	time = 105.;
 	centerPosition = Vector3Df(-.5, 0, 0);
 	yaw = 0;
 	pitch = 0.2;

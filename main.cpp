@@ -59,7 +59,7 @@ void Timer(int obsolete) {
 	int msec = (clock() - t1) / CLOCKS_PER_SEC;
 	static int counter = 0, i = 1;
 	counter = !counter ? msec : counter;
-	if (msec >= 30 * 60 * i) {
+	if (msec >= 30 /* 60*/ * i) {
 		counter *= 2;
 		i++;
 		printf("%dth file in %d seconds\n", i, msec);
@@ -72,10 +72,10 @@ void Timer(int obsolete) {
 		// Convert to FreeImage format & save to file
 		FIBITMAP* image = FreeImage_ConvertFromRawBits(pixels, width, height, 3 * width, 24, 0xFF0000, 0x00FF00, 0x0000FF, false);
 		char fname[100];
-		sprintf_s(fname, "a-%d.png", i);
+		sprintf_s(fname, "after-fix-cos-%d.png", i);
 		FreeImage_Save(FIF_PNG, image, fname, 0);
 		
-		interactiveCamera->tick(1.); buffer_reset = true;
+		//interactiveCamera->tick(1.); buffer_reset = true;
 		// Free resources
 		FreeImage_Unload(image);
 		delete[] pixels;
