@@ -59,7 +59,7 @@ void Timer(int obsolete) {
 	int msec = (clock() - t1) / CLOCKS_PER_SEC;
 	static int counter = 0, i = 1;
 	counter = !counter ? msec : counter;
-	if (msec >= 30 /* 60*/ * i) {
+	if (msec >= 30 * 60 * i) {
 		counter *= 2;
 		i++;
 		printf("%dth file in %d seconds\n", i, msec);
@@ -282,11 +282,13 @@ void prepCUDAscene(){
 
 	// specify scene filename 
 	//const char* scenefile = "data/teapot.ply";  // teapot.ply, big_atc.ply
-	//const char* scenefile = "data/happy.ply";
+	const char* scenefile = "data/happy.ply";
 	//const char* scenefile = "data/teapot.ply";
-	const char* scenefile = "data/shark.ply";
+	//const char* scenefile = "data/shark.ply";
 	//const char* scenefile = "data/chopper.ply";
+	//const char* scenefile = "data/dodecahedron.ply";
 	//const char* scenefile = "data/egret.ply";
+	//const char* scenefile = "data/SIMPLE.PLY";
 	//const char* scenefile = "data/bun_zipper_res2.ply";  // teapot.ply, big_atc.ply
 	//const char* scenefile = "data/bun_zipper.ply";  // teapot.ply, big_atc.ply
 	//const char* scenefile = "data/happy.ply";  // teapot.ply, big_atc.ply

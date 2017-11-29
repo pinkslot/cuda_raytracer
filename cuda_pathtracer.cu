@@ -39,7 +39,6 @@
 
 #include "cuda_pathtracer.h"
 
-#define M_PI 3.1415926535897932384626422832795028841971f
 #define TWO_PI 6.2831853071795864769252867665590057683943f
 #define NUDGE_FACTOR     1e-3f  // epsilon
 #define samps  1 // samples
@@ -111,13 +110,14 @@ __device__ Sphere spheres[] = {
 	// ground
 	//{ 100000.f, 0.f, { 0.0f, -100001.2, 0.f }},
 	{ .25f, { -.5f, 1.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1. },
-	{ .5f, { -1.1f, 0.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1.33 },
-	{ .25f, { -1.1f, 0.f, 0.f }, { 0.9f, 0.9f, 0.9f }, 1.f, .001 },
+	{ .4f, { -1.6f, 0.f, -.5f  }, { 0.f, 0.f, 0.f }, 0.f, 1.33 },
+	{ .4f, { -.7f, 0.f, -.5f }, { 0.9f, 0.9f, 0.9f }, 1.f, .001 },
 	{ 100.f, { -.5f, 1.1f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 0.f },
 	//{ .35f, { -.5f, 1.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1.33 },
-	{ 20.1f, { 0.f, 0.f, 0.f }, { .3f, .4f, 0.5f }, .0, 1.f },
+	{ 20.1f, { 0.f, 0.2f, 0.f }, { .3f, .4f, 0.5f }, .0, 1.f },
 
 	{ .3f, { -.5f, 1.f, 0.f }, { 0.f, 0.f, 0.f }, 0.f, 1.33 },
+	{ .4f, { -1.15f, -0.4f, .2f }, { 0.7f, 0.7f, 0.2f }, 2.f, 1.0 },
 
 	//{ .5f, 0.f, {0.f, 0.f, 0.f } },
 	// mountains
@@ -336,13 +336,14 @@ struct PhasePoint {
 
 __device__ Vector3Df dif_dir(Vector3Df norm, curandState *randstate) {
 	Vector3Df res;
-	float rand_sin = curand_uniform(randstate),
+	norm.normalize();
+	float rand_sin = curand_uniform(randstate),			// only positive
 		phi = curand_uniform(randstate) * 2 * M_PI,
 		x1 = norm.x, x2 = norm.y, x3 = norm.z;
 
-	Vector3Df rand_dir = Vector3Df(cos(phi) * rand_sin, sin(phi) * rand_sin, sqrt(1 - rand_sin *rand_sin));
-
-	if (abs(x3 - 1) > 1e-5) {
+	Vector3Df rand_dir = Vector3Df(cos(phi) * rand_sin, sin(phi) * rand_sin, sqrt(1. - rand_sin *rand_sin));
+	rand_dir.normalize();
+	if (abs(1 - x3) > 1e-5) {
 		float denom = sqrt(1 - x3);
 		res.x = dot(Vector3Df(x1 * x3 / denom, -x2 / denom, x1), rand_dir);
 		res.y = dot(Vector3Df(x2 * x3 / denom, x1 / denom, x2), rand_dir);
@@ -359,8 +360,7 @@ __device__ Vector3Df dif_dir(Vector3Df norm, curandState *randstate) {
 __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vector3Df raydir, int avoidSelf, float time,
 	Triangle *pTriangles, int* cudaBVHindexesOrTrilists, float* cudaBVHlimits, float* cudaTriangleIntersectionData, int* cudaTriIdxList)
 {
-	unsigned int x = blockIdx.x*blockDim.x + threadIdx.x;
-	unsigned int y = blockIdx.y*blockDim.y + threadIdx.y;
+
 	// colour mask
 	Vector3Df ret;
 #define N 10
@@ -424,15 +424,21 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 		Vector3Df n(pTriangles[pBestTriIdx]._normal);
 		bool into = dot(n, raydir) < 0;
 		Vector3Df lambda;
-		float obj_k = 1.3f, mu = 0.f, spec_frac = 1., dif_refl_frac = 0.;
+		float obj_k = 1.3f, mu = 0.f, spec_frac = .7, dif_refl_frac = 0.7;
 		if (!into) {
-			mu = 5.f;
-			lambda = Vector3Df(.7f, .5f, .15f);
-			spec_frac = 1., dif_refl_frac = 1.;
-			
+			mu = .7f;
+			obj_k = 1.3;
+			lambda = Vector3Df(.7f, .5f, .2f);
+			spec_frac = .9, dif_refl_frac = .1;
 		}
 		if (sphere_id != -1) {							// other sphere
-			spec_frac = 1., dif_refl_frac = 0.;
+			if (sphere_id == 1) {
+				spec_frac = 0., dif_refl_frac = .99;
+			}
+			else {
+				spec_frac = 1., dif_refl_frac = 0.;
+			}
+
 			Sphere &sp = spheres[sphere_id];
 			avoidSelf = -1;
 			n = rayorig + raydir * hit_dist - sp.pos;
@@ -492,18 +498,16 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 				float fcoin = curand_uniform(randstate);
 #define BRANCHB 0
 				if (BRANCHB || fcoin < spec_frac) {
-					float k = into ? (MEDIA_K / obj_k) : (obj_k / MEDIA_K);  // IOR ratio of refractive materials
+					float k = !into ? (MEDIA_K / obj_k) : (obj_k / MEDIA_K);  // IOR ratio of refractive materials
 					float ddn = dot(raydir, nl);
 					float cos2t = 1.0f - k * k * (1.f - ddn*ddn);	
 					Vector3Df rdir = raydir - n * 2.0f * dot(n, raydir);
 
+					Vector3Df spec_lambda(.2, .8, .2);
 					if (cos2t < 0.0f) // total internal reflection
 					{
 						rdir.normalize();
-						if (sphere_id == 2) {
-							new_mask.x = 0; new_mask.z = 0;
-						}
-						stack[top++] = PhasePoint(cur.time - hit_dist, neworig, rdir, cur.n + 1, new_mask);
+						stack[top++] = PhasePoint(cur.time - hit_dist, neworig, rdir, cur.n + 1, spec_lambda * new_mask);
 					}
 					else // cos2t > 0
 					{
@@ -518,14 +522,16 @@ __device__ Vector3Df path_trace(curandState *randstate, Vector3Df rayorig, Vecto
 							stack[top++] = PhasePoint(cur.time - hit_dist, neworig, tdir, cur.n + 1, new_mask * (BRANCHB ? (spec_frac - R) : 1.f));
 						}
 						if (BRANCHB || fcoin < R) {
-							stack[top++] = PhasePoint(cur.time - hit_dist, neworig, rdir, cur.n + 1, new_mask * (BRANCHB ? R : 1.f));
+							stack[top++] = PhasePoint(cur.time - hit_dist, neworig, rdir, cur.n + 1, spec_lambda * new_mask * (BRANCHB ? R : 1.f));
 						}
 					}
 				}
 				
+				Vector3Df difLambda(.7, .2, .1);
+//				Vector3Df difLambda(1., 1., 1.);
 				if (BRANCHB || fcoin > spec_frac && fcoin < spec_frac + (1 - spec_frac) * dif_refl_frac) {
 					Vector3Df rdir = dif_dir(nl, randstate);
-					stack[top++] = PhasePoint(cur.time - hit_dist, neworig, rdir, cur.n + 1, new_mask * (BRANCHB ? ((1 - spec_frac) * (1 - dif_refl_frac)) : 1.f));
+					stack[top++] = PhasePoint(cur.time - hit_dist, neworig, rdir, cur.n + 1, difLambda * new_mask * (BRANCHB ? ((1 - spec_frac) * (1 - dif_refl_frac)) : 1.f));
 				}
 
 				if (BRANCHB || fcoin > spec_frac + (1 - spec_frac) * dif_refl_frac) {
